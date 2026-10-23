@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Shadow Store</title>
+  <meta name="theme-color" content="#0B0B10" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M6 9.5 22 6v4L6 13.5z" />
+          <path d="M10 16.5 26 13v4l-16 3.5z" />
+          <path d="M6 23.5 22 20v4L6 27.5z" />
+        </svg>
+        <span id="shopName">Shadow Store</span>
+      </div>
+      <button class="bal-pill" data-act="go" data-tab="profile" aria-label="Balance">
+        <span class="bal-dot"></span><span id="topBalance">$0.00</span>
+      </button>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <nav class="tabbar" id="tabbar"></nav>
+  </div>
+
+  <div id="sheetBackdrop" class="backdrop"></div>
+  <section id="sheet" class="sheet" role="dialog" aria-modal="true">
+    <div class="sheet-handle"></div>
+    <div id="sheetBody" class="sheet-body"></div>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="config.js"></script>
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
