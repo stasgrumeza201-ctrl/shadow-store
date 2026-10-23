@@ -241,7 +241,6 @@
         <div class="muted small">${h(T("top_up_hint"))}</div>
         <div class="hero-actions">
           <button class="btn primary" data-act="topup">${h(T("top_up"))}</button>
-          <button class="btn ghost" data-act="manager">💬 ${h(T("manager"))}</button>
         </div>
       </section>
       ${cats.length ? `<div class="chips">${chip("all", T("all"))}${cats.map((c) => chip(c.id, (c.icon ? c.icon + " " : "") + loc(c.name))).join("")}</div>` : ""}
