@@ -672,7 +672,7 @@
         ${st.items.length ? `<div class="list">${st.items.map((d) => `
           <button class="item" data-act="a-user" data-id="${d.user_id}">
             <span style="font-size:20px">${d.method === "crypto" ? "🪙" : d.method === "card" ? "💳" : "✍️"}</span>
-            <div class="grow"><div class="title">#${d.id} · ${h(userName({ ...d.users, id: d.user_id }))}</div>
+            <div class="grow"><div class="title">#${d.user_no ?? d.id} · ${h(userName({ ...d.users, id: d.user_id }))}</div>
               <div class="sub">${d.paid_asset ? h(`${d.paid_amount} ${d.paid_asset}`) + " · " : ""}${d.comment ? h(d.comment) + " · " : ""}${h(fdate(d.paid_at || d.created_at))}</div></div>
             <div style="text-align:right"><div class="val">${money(d.amount_usd)}</div><div style="margin-top:4px">${statusChip(d.status)}</div></div>
           </button>`).join("")}</div>
