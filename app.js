@@ -55,7 +55,10 @@
     } catch { throw new Error("NETWORK"); }
     let j;
     try { j = await res.json(); } catch { throw new Error("SERVER_ERROR"); }
-    if (!j.ok) throw new Error(j.error || "SERVER_ERROR");
+    if (!j.ok) {
+      if (j.error === "SUB_REQUIRED" && S.me) { S.settings.sub_required = true; setTimeout(subGate); }
+      throw new Error(j.error || "SERVER_ERROR");
+    }
     return j.data;
   }
   const errText = (e) => (I18N.en["e_" + e?.message] ? T("e_" + e.message) : T("error"));
@@ -175,6 +178,17 @@
       ${S.settings.manager ? `<button class="btn ghost" data-act="manager">💬 ${h(T("contact_manager"))}</button>` : ""}</div>`;
   }
 
+  // required channel subscription
+  function subGate() {
+    closeSheet?.(true);
+    $("#tabbar").innerHTML = "";
+    $("#view").innerHTML = `<div class="gate"><div style="font-size:52px">📢</div>
+      <div style="font-size:20px;font-weight:700">${h(T("sub_title"))}</div>
+      <div class="muted" style="max-width:300px">${h(T("sub_text"))}</div>
+      ${S.settings.sub_link ? `<button class="btn primary" data-act="sub-open">${h(T("sub_btn"))}</button>` : ""}
+      <button class="btn ghost" data-act="sub-check">${h(T("sub_check"))}</button></div>`;
+  }
+
   // ============================================================ data
   function setMe(d) {
     S.me = d.user;
@@ -191,6 +205,7 @@
   }
   let refreshing = false;
   async function refreshMe() {
+    if (S.me && S.settings.sub_required) return checkSub(false);
     if (refreshing || !S.me) return;
     refreshing = true;
     try {
@@ -199,6 +214,15 @@
       setMe(d);
       renderTop();
       if (changed && ["shop", "profile", "cart"].includes(S.tab) && !sheetOpen()) render();
+    } catch { /* ignore */ } finally { refreshing = false; }
+  }
+  async function checkSub(showError = true) {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      setMe(await api("me", { check_sub: true }));
+      if (!S.settings.sub_required) return location.reload();
+      if (showError) { hnotify("error"); toast(T("e_SUB_REQUIRED"), true); }
     } catch { /* ignore */ } finally { refreshing = false; }
   }
   const product = (id) => S.catalog.products.find((p) => p.id === Number(id));
@@ -717,6 +741,8 @@
         <div class="field"><label>${h(T("coins"))}</label><div class="coins">${ALL.map((c) =>
           `<label><input type="checkbox" name="asset" value="${c}" ${d.assets.includes(c) ? "checked" : ""}>${c}</label>`).join("")}</div></div>
         ${toggle("maintenance", T("maintenance_mode"), d.maintenance)}
+        <div class="field" style="margin-top:16px"><label>${h(T("sub_channel"))}</label>${input("sub_channel", d.sub_channel || "", 'placeholder="@channel"')}<div class="hint">${h(T("sub_channel_hint"))}</div></div>
+        ${field(T("sub_link"), input("sub_link", d.sub_link || "", 'placeholder="https://t.me/+…"'))}
         <button type="button" class="btn primary block" style="margin-top:16px" data-act="settings-save">${h(T("save"))}</button></form>`;
     },
 
@@ -944,6 +970,8 @@
   const ACT = {
     go: (el) => { closeSheet(true); go(el.dataset.tab); },
     reload: () => location.reload(),
+    "sub-open": () => openTg(S.settings.sub_link),
+    "sub-check": () => checkSub(true),
     close: () => closeSheet(),
     cat: (el) => { S.cat = el.dataset.id; haptic(); render(); },
     product: (el) => { haptic(); openProduct(el.dataset.id); },
@@ -1104,6 +1132,7 @@
         shop_name: val("shop_name", f), min_deposit: val("min_deposit", f).replace(",", "."),
         quick_amounts: val("quick_amounts", f).split(/[,\s]+/).map(Number).filter((x) => x > 0),
         assets: $$('[name="asset"]:checked', f).map((x) => x.value), maintenance: checked("maintenance", f),
+        sub_channel: val("sub_channel", f), sub_link: val("sub_link", f),
       });
       toast(T("saved"));
       const me = await api("me"); setMe(me); renderTop();
@@ -1159,6 +1188,7 @@
     }
     if (S.me.is_blocked) return gate("⛔", T("blocked"));
     if (S.settings.maintenance && S.role === "user") return gate("🛠", T("maintenance"), true);
+    if (S.settings.sub_required) return subGate();
 
     try { await loadCatalog(); } catch (e) { return gate("⚠️", errText(e), true); }
 
