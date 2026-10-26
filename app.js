@@ -68,6 +68,7 @@
     const el = $("#toast");
     el.textContent = msg;
     el.classList.toggle("err", err);
+    el.classList.toggle("top", sheetOpen()); // don't cover the sheet's buttons
     el.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
@@ -96,26 +97,108 @@
   const empty = (icon, text, extra = "") => `<div class="empty"><div class="big">${icon}</div><div>${h(text)}</div>${extra}</div>`;
   const statusChip = (s) => `<span class="status s-${h(s)}">${h(T("st_" + s) !== "st_" + s ? T("st_" + s) : T(s))}</span>`;
 
-  // ============================================================ sheet
+  // ============================================================ sheet (spring physics, drag to dismiss)
+  const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let sheetLocked = false, sheetOnClose = null;
+  let sheetY = null, sheetAnim = null; // current on-screen offset (px) and running spring
+  const sheetH = () => $("#sheet").offsetHeight || window.innerHeight;
+
+  function paintSheet(y) {
+    sheetY = y;
+    $("#sheet").style.transform = `translate3d(0, ${y}px, 0)`;
+    $("#sheetBackdrop").style.opacity = String(Math.max(0, Math.min(1, 1 - y / sheetH())));
+  }
+  // critically damped by default (damping 1); a little bounce only after a flick
+  function springSheet(to, velocity = 0, { response = 0.32, damping = 1, done } = {}) {
+    cancelAnimationFrame(sheetAnim);
+    if (REDUCED) { paintSheet(to); done?.(); return; }
+    const k = (2 * Math.PI / response) ** 2, c = (4 * Math.PI * damping) / response;
+    let x = sheetY ?? sheetH(), v = velocity, last = performance.now();
+    const step = (now) => {
+      let dt = Math.min(0.064, (now - last) / 1000); last = now;
+      while (dt > 0) { const h2 = Math.min(dt, 1 / 240); v += (-k * (x - to) - c * v) * h2; x += v * h2; dt -= h2; }
+      if (Math.abs(x - to) < 0.5 && Math.abs(v) < 8) { paintSheet(to); sheetAnim = null; done?.(); return; }
+      paintSheet(x); sheetAnim = requestAnimationFrame(step);
+    };
+    sheetAnim = requestAnimationFrame(step);
+  }
+  // Apple's momentum projection: where would a flick come to rest?
+  const project = (v, d = 0.998) => (v / 1000) * d / (1 - d);
+  const rubber = (over, dim, c = 0.55) => (over * dim * c) / (dim + c * Math.abs(over));
+
   function openSheet(html, opts = {}) {
+    const wasOpen = sheetOpen();
     $("#sheetBody").innerHTML = html;
     $("#sheetBody").scrollTop = 0;
     $("#sheet").classList.add("open");
     $("#sheetBackdrop").classList.add("open");
     sheetLocked = !!opts.locked;
     sheetOnClose = opts.onClose || null;
+    if (!wasOpen && (sheetY === null || sheetAnim === null)) paintSheet(sheetH()); // start below the screen
+    springSheet(0); // from wherever it is now, so an interrupted close reverses smoothly
     updateBack();
   }
   const sheetOpen = () => $("#sheet").classList.contains("open");
-  function closeSheet(force = false) {
+  function closeSheet(force = false, velocity = 0) {
     if (!sheetOpen() || (sheetLocked && !force)) return;
     $("#sheet").classList.remove("open");
     $("#sheetBackdrop").classList.remove("open");
     const cb = sheetOnClose; sheetOnClose = null; sheetLocked = false;
+    springSheet(sheetH() + 24, velocity, { response: 0.3 });
     updateBack();
     if (cb) cb();
   }
+
+  // drag: 1:1 with the finger, from the handle anywhere, or from the content when it is scrolled to the top
+  (function sheetDrag() {
+    const el = $("#sheet"), body = $("#sheetBody");
+    let drag = null;
+    const begin = (y, fromHandle) => ({ y0: y, s0: sheetY ?? 0, fromHandle, active: false, hist: [[performance.now(), y]] });
+    const move = (y, ev) => {
+      if (!drag) return;
+      const dy = y - drag.y0;
+      if (!drag.active) {
+        if (Math.abs(dy) < 8) return;                      // small threshold before committing
+        if (!drag.fromHandle && (dy < 0 || body.scrollTop > 0)) { drag = null; return; } // let content scroll
+        drag.active = true; drag.y0 = y; drag.s0 = sheetY ?? 0;
+        cancelAnimationFrame(sheetAnim); sheetAnim = null;  // grab it mid-flight
+      }
+      ev?.cancelable && ev.preventDefault();
+      const raw = drag.s0 + (y - drag.y0);
+      const lockedLimit = sheetLocked ? 0 : Infinity;
+      let ny = raw < 0 ? -rubber(-raw, sheetH()) : raw;     // resist above the top
+      if (ny > lockedLimit) ny = lockedLimit + rubber(ny - lockedLimit, sheetH());
+      paintSheet(ny);
+      drag.hist.push([performance.now(), y]);
+      if (drag.hist.length > 6) drag.hist.shift();
+    };
+    const end = () => {
+      if (!drag) return;
+      const d = drag; drag = null;
+      if (!d.active) return;
+      const [t0, y0] = d.hist[0], [t1, y1] = d.hist[d.hist.length - 1];
+      const v = t1 > t0 ? ((y1 - y0) / (t1 - t0)) * 1000 : 0;   // px/s
+      const rest = (sheetY ?? 0) + project(v);
+      if (!sheetLocked && rest > sheetH() * 0.45) { haptic("light"); closeSheet(false, v); }
+      else springSheet(0, v, { damping: Math.abs(v) > 300 ? 0.8 : 1 });
+    };
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      drag = begin(e.touches[0].clientY, !body.contains(e.target));
+    }, { passive: true });
+    el.addEventListener("touchmove", (e) => move(e.touches[0].clientY, e), { passive: false });
+    el.addEventListener("touchend", end);
+    el.addEventListener("touchcancel", end);
+    // mouse (Telegram Desktop): drag by the handle
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "mouse" || body.contains(e.target)) return;
+      el.setPointerCapture(e.pointerId);
+      drag = begin(e.clientY, true);
+    });
+    el.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse") move(e.clientY, e); });
+    el.addEventListener("pointerup", (e) => { if (e.pointerType === "mouse") end(); });
+  })();
+
   function updateBack() {
     if (!tg?.BackButton) return;
     if ((sheetOpen() && !sheetLocked) || S.tab !== "shop") tg.BackButton.show(); else tg.BackButton.hide();
@@ -134,13 +217,19 @@
 
   // ============================================================ navigation & render
   function go(tab) {
+    const changed = S.tab !== tab;
     S.tab = tab;
     window.scrollTo(0, 0);
     render();
+    if (changed && !REDUCED) {
+      const v = $("#view");
+      v.classList.remove("view-enter"); void v.offsetWidth; v.classList.add("view-enter");
+    }
+    if (changed) haptic("light");
   }
 
   function renderTabbar() {
-    const tabs = ["shop", "search", "cart", "orders", "profile"];
+    const tabs = ["shop", "cart", "orders", "profile"];
     if (isStaff()) tabs.push("admin");
     const count = S.cart.reduce((a, i) => a + i.qty, 0);
     $("#tabbar").innerHTML = tabs.map((t) => `
@@ -161,7 +250,7 @@
     renderTabbar();
     const v = $("#view");
     switch (S.tab) {
-      case "shop": v.innerHTML = viewShop(); break;
+      case "shop": v.innerHTML = viewShop(); mountShop(); break;
       case "search": v.innerHTML = viewSearch(); mountSearch(); break;
       case "cart": v.innerHTML = viewCart(); break;
       case "orders": v.innerHTML = `<h1 class="page-title">${h(T("tab_orders"))}</h1><div id="ordersBox">${spinner()}</div>`; loadOrders(); break;
@@ -228,14 +317,22 @@
   const product = (id) => S.catalog.products.find((p) => p.id === Number(id));
 
   // ============================================================ shop
+  const GLYPH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/></svg>';
+  function ph(p, cls = "") {
+    const c = S.catalog.categories.find((x) => x.id === p.category_id);
+    const inner = c?.icon ? `<span class="ph-emoji">${h(c.icon)}</span>` : GLYPH;
+    return `<div class="ph ${cls}" data-hue="${(p.category_id ?? p.id) % 5}">${inner}</div>`;
+  }
+  const stockOrder = (list) => [...list].sort((a, b) => (a.stock === 0) - (b.stock === 0)); // sold-out items go last
+
   function productCard(p) {
     const img = p.images?.[0];
     const out = p.stock === 0;
     const name = loc(p.name);
     const stock = p.stock === null ? T("available") : out ? T("out_of_stock") : T("in_stock", { n: p.stock });
-    return `<button class="p-card" data-act="product" data-id="${p.id}">
+    return `<button class="p-card ${out ? "out" : ""}" data-act="product" data-id="${p.id}">
       <div class="p-img">
-        ${img ? `<img src="${h(img)}" alt="" loading="lazy">` : `<div class="ph">${h(name.charAt(0).toUpperCase() || "•")}</div>`}
+        ${img ? `<img src="${h(img)}" alt="" loading="lazy">` : ph(p)}
         <div class="badges">
           ${p.is_hot ? `<span class="badge-hot">${h(T("hot"))}</span>` : ""}
           ${p.is_new ? `<span class="badge-new">${h(T("new"))}</span>` : ""}
@@ -249,27 +346,48 @@
     </button>`;
   }
 
+  function shopList() {
+    const q = S.search.trim().toLowerCase();
+    let prods = S.cat === "all" ? S.catalog.products : S.catalog.products.filter((p) => String(p.category_id) === String(S.cat));
+    if (q) prods = prods.filter((p) => [loc(p.name), loc(p.description), p.name?.en].join(" ").toLowerCase().includes(q));
+    return stockOrder(prods);
+  }
+  function shopGrid(prods) {
+    return prods.length ? `<div class="grid">${prods.map(productCard).join("")}</div>` : empty("📦", T("nothing_found"));
+  }
   function viewShop() {
     const cats = S.catalog.categories;
     const cat = cats.find((c) => String(c.id) === String(S.cat));
     if (!cat) S.cat = "all";
-    const prods = S.cat === "all" ? S.catalog.products : S.catalog.products.filter((p) => String(p.category_id) === String(S.cat));
+    const prods = shopList();
     const chip = (id, label) => `<button class="chip ${String(S.cat) === String(id) ? "active" : ""}" data-act="cat" data-id="${id}">${h(label)}</button>`;
     return `
-      <section class="card glow hero">
-        <div class="hero-top">
+      <section class="card glow balbar">
+        <button class="balbar-info" data-act="go" data-tab="profile">
           <span class="eyebrow">${h(T("balance"))}</span>
-          <button class="chip-btn" data-act="lang">${I18N[S.lang].flag} ${S.lang.toUpperCase()}</button>
-        </div>
-        <div class="hero-bal">${balHtml(S.me.balance)}</div>
-        <div class="muted small">${h(T("top_up_hint"))}</div>
-        <div class="hero-actions">
-          <button class="btn primary" data-act="topup">${h(T("top_up"))}</button>
+          <span class="balbar-sum">${balHtml(S.me.balance)}</span>
+        </button>
+        <div class="balbar-actions">
+          <button class="chip-btn" data-act="lang" aria-label="Language">${I18N[S.lang].flag} ${S.lang.toUpperCase()}</button>
+          <button class="btn primary sm" data-act="topup">${h(T("top_up"))}</button>
         </div>
       </section>
+      <div class="search-box shop-search">${ICON.search.replace("<svg", '<svg aria-hidden="true"')}
+        <input class="input" id="q" type="search" placeholder="${h(T("search_ph"))}" value="${h(S.search)}" autocomplete="off" enterkeyhint="search">
+      </div>
       ${cats.length ? `<div class="chips">${chip("all", T("all"))}${cats.map((c) => chip(c.id, (c.icon ? c.icon + " " : "") + loc(c.name))).join("")}</div>` : ""}
-      <h2 class="section-title">${h(cat ? loc(cat.name) : T("products"))}<span class="muted small">${prods.length}</span></h2>
-      ${prods.length ? `<div class="grid">${prods.map(productCard).join("")}</div>` : empty("📦", T("nothing_found"))}`;
+      <h2 class="section-title">${h(cat ? loc(cat.name) : T("products"))}<span class="muted small" id="shopCount">${prods.length}</span></h2>
+      <div id="shopGrid">${shopGrid(prods)}</div>`;
+  }
+  function mountShop() {
+    const input = $("#q");
+    if (!input) return;
+    input.addEventListener("input", () => {
+      S.search = input.value;
+      const prods = shopList();
+      $("#shopGrid").innerHTML = shopGrid(prods);
+      $("#shopCount").textContent = prods.length;
+    });
   }
 
   function openProduct(id) {
@@ -282,7 +400,7 @@
     const stock = p.stock === null ? T("available") : out ? T("out_of_stock") : T("in_stock", { n: p.stock });
     const desc = loc(p.description);
     openSheet(`
-      <div class="gallery">${imgs.length ? imgs.map((u) => `<div><img src="${h(u)}" alt=""></div>`).join("") : `<div><div class="ph" style="font-size:64px">${h(name.charAt(0).toUpperCase())}</div></div>`}</div>
+      <div class="gallery">${imgs.length ? imgs.map((u) => `<div><img src="${h(u)}" alt=""></div>`).join("") : `<div>${ph(p, "big")}</div>`}</div>
       <div style="display:flex;gap:6px;margin-top:14px">
         ${p.is_hot ? `<span class="badge-hot">${h(T("hot"))}</span>` : ""}${p.is_new ? `<span class="badge-new">${h(T("new"))}</span>` : ""}
       </div>
@@ -326,7 +444,7 @@
     const input = $("#q");
     const draw = () => {
       const q = S.search.trim().toLowerCase();
-      const res = S.catalog.products.filter((p) => !q ||
+      const res = stockOrder(S.catalog.products).filter((p) => !q ||
         [loc(p.name), loc(p.description), p.name?.en].join(" ").toLowerCase().includes(q));
       $("#results").innerHTML = res.length ? `<div class="grid">${res.map(productCard).join("")}</div>` : empty("🔍", T("nothing_found"));
     };
@@ -348,7 +466,7 @@
         <button class="chip-btn" data-act="cart-clear">${h(T("clear"))}</button></h1>
       <div class="list">${lines.map((l) => `
         <div class="item">
-          <div class="thumb">${l.p.images?.[0] ? `<img src="${h(l.p.images[0])}" alt="">` : `<div class="ph">${h(loc(l.p.name).charAt(0))}</div>`}</div>
+          <div class="thumb">${l.p.images?.[0] ? `<img src="${h(l.p.images[0])}" alt="">` : ph(l.p, "small")}</div>
           <div class="grow">
             <div class="title">${h(loc(l.p.name))}</div>
             <div class="sub">${money(l.p.price)} × ${l.qty} = <b style="color:#fff">${money(l.p.price * l.qty)}</b></div>
@@ -980,7 +1098,7 @@
       S.pq.qty = Math.max(1, Math.min(maxQty(p), S.pq.qty + Number(el.dataset.d)));
       $("#pqty").textContent = S.pq.qty; haptic();
     },
-    "add-cart": () => { addToCart(S.pq.id, S.pq.qty); hnotify("success"); toast(T("added")); closeSheet(); },
+    "add-cart": () => { addToCart(S.pq.id, S.pq.qty); hnotify("success"); closeSheet(); toast(T("added")); },
     "buy-now": () => openCheckout([{ id: S.pq.id, qty: S.pq.qty }], false),
     cqty: (el) => {
       const i = S.cart.find((x) => x.id === Number(el.dataset.id));
@@ -1197,6 +1315,11 @@
     render();
     if (!S.me.lang_chosen) openLang(true);
   }
+
+  document.addEventListener("touchstart", () => {}, { passive: true }); // enables :active press states on iOS
+  const topbar = document.querySelector(".topbar");
+  const onScroll = () => topbar?.classList.toggle("scrolled", window.scrollY > 4);
+  window.addEventListener("scroll", onScroll, { passive: true });
 
   init();
 })();
